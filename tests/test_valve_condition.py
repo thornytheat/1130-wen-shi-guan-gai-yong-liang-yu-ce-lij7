@@ -69,6 +69,6 @@ def test_live_dispatch_includes_actionable_telemetry_and_water_timing():
     trouble=[line for line in telemetry if line.get("检点状态")=="关闭后仍有流量"]
     assert {line["棚区"] for line in trouble} == {"棚-04","棚-07"}
     assert any(row["原处置"]=="遥测断档" for row in batch["followups"])
-    totals=batch["stages"][5]["records"]
+    totals=batch["stages"][6]["records"]
     metrics=[row for row in totals if "合计预期（升）" in row]
     assert sum(row["待排执行（升）"] for row in metrics)==sum(row["实际可供升"] for row in batch["scheduled"])

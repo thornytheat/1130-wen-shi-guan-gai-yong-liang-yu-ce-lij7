@@ -3,6 +3,7 @@ from hashlib import sha256
 from json import loads
 from pathlib import Path
 from collections import defaultdict
+from statistics import median
 
 from .valve_telemetry import service as valves
 from .rootzone_history import service as soil
@@ -10,8 +11,13 @@ from .evapotranspiration import service as model
 from .moisture_band import service as safety
 from .irrigation_quota import service as quota
 from .watering_ledger import service as ledger
+from .supplemental_release import service as release
+from .supplemental_release.ledger import ReleaseLedger
+from .supplemental_release.analysis import STATE_RELEASED
 
 BASE = Path(__file__).resolve().parents[2]
+# 补灌放行台账放在仓库外的运行态目录，封档记录不进版本库。
+RUNTIME_LEDGER = BASE / "runtime" / "supplemental_release.ndjson"
 
 
 def stage(title,summary,records):
@@ -39,7 +45,63 @@ def model_by_crop(previous, current, controls, penalty):
     return portfolios
 
 
-def run(capacity: int | None = None) -> dict:
+def pump_for_zone(zone):
+    return "北井" if int(zone.rsplit("-",1)[1])%2==0 else "西渠"
+
+
+def zone_dry_history(observations, zone, asof):
+    """收集棚区在业务日之前已发布的 (根区含水率中位数, 当日补水量) 序列。"""
+    grouped=defaultdict(list)
+    for item in observations:
+        if item.zone==zone and item.day < asof and item.published_day < asof:
+            grouped[item.day].append(item)
+    series=[]
+    for day in sorted(grouped):
+        rows=grouped[day]
+        series.append((median(item.moisture for item in rows), float(rows[0].litres)))
+    return series
+
+
+def supplemental_clearance(observations, quality_issues, windows_by_zone, config, ledger_path):
+    """重排配水之前的补灌放行裁决，返回 (封档裁决, 排班结果, 未排告警)。"""
+    day=config["day"]
+    candidates=[]
+    for issue in quality_issues:
+        zone=issue["zone"]
+        spans=windows_by_zone.get(zone, ())
+        gap=max((span.gap_minutes for span in spans), default=1440)
+        history=zone_dry_history(observations, zone, day)
+        crop=next((item.crop for item in observations if item.zone==zone), "—")
+        candidates.append(release.build_candidate(
+            zone=zone, crop=crop, pump=pump_for_zone(zone), gap=gap, history=history,
+            asset_limit=config["valve_max_l"], per_min=config["flow_l_min"], window=config["window"],
+        ))
+    verdicts=release.run_adjudication(candidates)
+    records=[verdict.evidence() for verdict in verdicts]
+    sealed=ReleaseLedger(ledger_path).seal_day(day, records)
+    sealed_by_zone={entry.zone: entry for entry in sealed}
+    # 台账封档口径覆盖重算结果：同日重跑时结论与额度以首次封档为准。
+    for row in records:
+        entry=sealed_by_zone[row["棚区"]]
+        row["裁决"]=entry.state
+        row["放行额度（升）"]=entry.conservative_l
+        row["参考补水量（升）"]=entry.requested_l
+        row["裁决依据"]=entry.basis
+        row["封档时间"]=entry.sealed_at
+    approvals=[{"zone": entry.zone, "amount_l": entry.conservative_l}
+               for entry in sealed if entry.state == STATE_RELEASED and entry.conservative_l > 0]
+    order_by_zone={candidate.zone: quota.IrrigationOrder.parse(dict(
+        zone=candidate.zone, pump=candidate.pump, crop=candidate.crop, state=STATE_RELEASED,
+        upper=float(candidate.asset_limit), lower=0.0, urgency=1.0,
+        per_min=candidate.per_min, window=candidate.window,
+    )) for candidate in candidates}
+    timetable, unscheduled = quota.schedule(order_by_zone.values(), approvals,
+                                             config["pump_windows"], config["breakdowns"])
+    coverage = quota.schedule_coverage(timetable, approvals)
+    return records, [line.public() for line in timetable], unscheduled, coverage
+
+
+def run(capacity: int | None = None, *, ledger_path: str | Path | None = None) -> dict:
     config=load_policy()
     dispatch_budget=config["budget"] if capacity is None else capacity
     if not 1 <= dispatch_budget <= 100:
@@ -75,8 +137,13 @@ def run(capacity: int | None = None) -> dict:
         fitted_evidence.append(dict(棚区=site.zone,作物=site.crop,根区含水=round(site.moisture,3),总需水=round(total,1),
                                     已供水=round(supplied,1),历史中位值=round(reference,1),当期断档=gap,拟合样本=fitted.trained))
         measured.append(result)
-        pump="北井" if int(site.zone.rsplit("-",1)[1])%2==0 else "西渠"
+        pump=pump_for_zone(site.zone)
         planning.append(dict(result,pump=pump,crop=site.crop,per_min=config["flow_l_min"],window=config["window"]))
+    # 重排配水之前，先给常规预测不适用（根区缺读）的棚区出补灌放行清单。
+    release_rows, release_runs, release_unscheduled, release_coverage = supplemental_clearance(
+        observations.records, quality_issues, windows_by_zone, config,
+        RUNTIME_LEDGER if ledger_path is None else ledger_path,
+    )
     orders=quota.inspect(planning)
     drafted, pump_usage=quota.distribute(orders.records,dispatch_budget*100,config["pump_caps"])
     _, overflow=ledger.totals_over_pumps(drafted,config["pump_caps"])
@@ -93,15 +160,29 @@ def run(capacity: int | None = None) -> dict:
     shift_summary=ledger.shift_summary(handover)
     summary=[dict(作物=name,校准样本=parts[1].support,误差下界=round(parts[1].low,2),误差上界=round(parts[1].high,2)) for name,parts in packs.items()]
     initials=[dict(棚区=span.zone,已供升=round(span.delivered,2),断档分钟=span.gap_minutes,有效片段=len(span.intervals)) for span in windows]
+    released_quota=sum(row["放行额度（升）"] for row in release_rows if row["裁决"]==STATE_RELEASED)
+    released_scheduled=sum(item["scheduled_l"] for item in release_coverage)
+    release_unscheduled_l=sum(item["unassigned_l"] for item in release_coverage)
+    release_summary=(f"候选 {len(release_rows)} 区，放行 {sum(row['裁决']==STATE_RELEASED for row in release_rows)} 区，"
+                     f"放行额度 {released_quota} 升，泵班排入 {released_scheduled} 升，未排 {release_unscheduled_l} 升")
     return {
-        "metrics":{"已配水（升）":sum(row["amount_l"] for row in drafted),"有效棚区":len(live),"配水泵组":len(pump_usage),"待查计量单":len(evidence)-accepted_count},
+        "metrics":{"已配水（升）":sum(row["amount_l"] for row in drafted),"有效棚区":len(live),"配水泵组":len(pump_usage),"待查计量单":len(evidence)-accepted_count,
+                   "补灌放行（升）":released_quota,"补灌已排（升）":released_scheduled},
         "columns":{"zone":"棚区","pump":"泵组","crop":"作物","amount_l":"批准供水（升）","min_l":"保底（升）","max_l":"需水上界（升）","reason":"处置"},
         "rows":drafted, "scheduled": [line.public() for line in timetable], "followups": followups,
+        "release": {"columns":{"棚区":"棚区","作物":"作物","泵组":"泵组","裁决":"裁决","放行额度（升）":"放行额度（升）",
+                               "参考补水量（升）":"参考补水量（升）","最近根区含水":"最近根区含水","当期断档分钟":"当期断档分钟",
+                               "历史干燥样本":"历史干燥样本","裁决依据":"裁决依据","封档时间":"封档时间"},
+                    "rows": release_rows,
+                    "scheduled": release_runs,
+                    "coverage": release_coverage,
+                    "unscheduled": release_unscheduled},
         "replay": [trial.public() for trial in trials], "shift_summary": shift_summary, "series":[dict(label=row["zone"],value=row["amount_l"]) for row in drafted],
         "stages":[stage("阀门遥测",f"有效点 {len(accepted)}，质量告警 {len(valve_issues)+len(pulses.rejected)}",initials+valve_issues+[row.public() for row in diagnostic]),
                   stage("根区水分",f"当天 {len(live)} 个棚区具备双探头，历史 {len(past)} 条有效聚合",quality_issues+[{"zone":row.zone,"moisture":row.moisture,"probes":row.probe_count} for row in live]),
                   stage("蒸腾回归",f"按 {len(packs)} 类作物拟合",fitted_evidence+model.summarize(trials)+sensitivity),
                   stage("偏差检验",f"校准估计与遥测缺测联锁复核 {len(measured)} 区",measured+summary),
+                  stage("补灌放行",release_summary,release_rows+release_runs+release_unscheduled),
                   stage("分区拨水",f"水源总额度 {dispatch_budget*100} 升，使用 {sum(pump_usage.values())} 升",drafted + [row.public() for row in timetable] + unscheduled),
                   stage("农事账目",f"累计表和授权对账通过 {accepted_count} 张",evidence + valves.compare_pump_timing(windows, timetable) + [row.evidence() for row in handover])],
         "audit_id":ledger.ledger_fingerprint(hashes,{**config,"capacity":dispatch_budget}),

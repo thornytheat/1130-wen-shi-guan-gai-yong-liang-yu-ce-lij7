@@ -12,7 +12,7 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge, UnsupportedMe
 
 from .pipeline import run
 
-MODULES = (('valve_telemetry', '阀门遥测'), ('rootzone_history', '根区水分'), ('evapotranspiration', '蒸腾回归'), ('moisture_band', '偏差检验'), ('irrigation_quota', '分区拨水'), ('watering_ledger', '农事账目'))
+MODULES = (('valve_telemetry', '阀门遥测'), ('rootzone_history', '根区水分'), ('evapotranspiration', '蒸腾回归'), ('moisture_band', '偏差检验'), ('supplemental_release', '补灌放行'), ('irrigation_quota', '分区拨水'), ('watering_ledger', '农事账目'))
 application = Flask(__name__, static_folder="web/static", template_folder="web/templates")
 application.config["MAX_CONTENT_LENGTH"] = 8192
 application.json.sort_keys = False

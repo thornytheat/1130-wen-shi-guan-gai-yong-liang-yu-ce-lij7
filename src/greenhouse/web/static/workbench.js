@@ -126,6 +126,23 @@ function renderEvidence() {
     }
 }
 
+function renderRelease(snapshot) {
+    const target = byId('release-rows');
+    const block = snapshot.release;
+    if (!block || !block.rows.length) {
+        target.replaceChildren(named('p', '本班无根区缺读候选棚区', 'empty'));
+        byId('release-summary').textContent = '无需补灌裁决';
+        return;
+    }
+    const held = block.rows.filter((row) => row['裁决'] !== '准予补灌').length;
+    const scheduled = block.coverage.reduce((total, row) => total + row.scheduled_l, 0);
+    const unassigned = block.coverage.reduce((total, row) => total + row.unassigned_l, 0);
+    byId('release-summary').textContent =
+        `放行 ${block.rows.length - held} 区 · 挂起 ${held} 区 · 已排 ${scheduled} 升 · 未排 ${unassigned} 升`;
+    const records = [...block.rows, ...block.scheduled, ...block.unscheduled];
+    renderTable(target, records, block.columns);
+}
+
 function render(snapshot) {
     active = snapshot;
     selectedRow = null;
@@ -133,6 +150,7 @@ function render(snapshot) {
     byId('run-id').textContent = snapshot.run_id;
     byId('export').disabled = false;
     renderMetrics(snapshot.metrics);
+    renderRelease(snapshot);
     renderRows();
     renderEvidence();
     const chart = byId('chart');

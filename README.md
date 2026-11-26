@@ -8,7 +8,7 @@
 docker compose up --build -d
 ```
 
-打开 `http://127.0.0.1:18209/` 查看灌溉配水单。左侧六个入口可展开运行证据。调整「班次配水额度」，点击「重排配水」比较处置结果。结束后执行 `docker compose down --remove-orphans`。
+打开 `http://127.0.0.1:18209/` 查看灌溉配水单。左侧入口可展开运行证据。重排配水前，工作台先呈现「补灌放行清单」，给出根区缺读棚区的裁决、保守放行额度与泵班排入情况。调整「班次配水额度」，点击「重排配水」比较处置结果。结束后执行 `docker compose down --remove-orphans`。
 
 ## 独立业务模块
 
@@ -16,6 +16,7 @@ docker compose up --build -d
 - 根区水分 `rootzone_history`
 - 蒸腾回归 `evapotranspiration`
 - 偏差检验 `moisture_band`
+- 补灌放行 `supplemental_release`
 - 分区拨水 `irrigation_quota`
 - 农事账目 `watering_ledger`
 

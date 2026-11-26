@@ -10,8 +10,9 @@
 | M2 根区水分 | 隔离未来观测和非目标深度 | 运行证据第 2 段 | `src/greenhouse/rootzone_history/contracts.py` `src/greenhouse/rootzone_history/analysis.py` `src/greenhouse/rootzone_history/service.py` | `tests/test_rootzone_history.py` |
 | M3 蒸腾回归 | 用时间隔离数据训练岭回归并与历史水量对照 | 运行证据第 3 段 | `src/greenhouse/evapotranspiration/contracts.py` `src/greenhouse/evapotranspiration/analysis.py` `src/greenhouse/evapotranspiration/service.py` | `tests/test_evapotranspiration.py` |
 | M4 偏差检验 | 记录残差区间，联锁缺测和工况漂移 | 运行证据第 4 段 | `src/greenhouse/moisture_band/contracts.py` `src/greenhouse/moisture_band/analysis.py` `src/greenhouse/moisture_band/service.py` | `tests/test_moisture_band.py` |
-| M5 分区拨水 | 联合班次水源、泵组和阀门开启窗口做分配 | 运行证据第 5 段 | `src/greenhouse/irrigation_quota/contracts.py` `src/greenhouse/irrigation_quota/analysis.py` `src/greenhouse/irrigation_quota/service.py` | `tests/test_irrigation_quota.py` |
-| M6 农事账目 | 以计量单和分区授权核对超额领用 | 运行证据第 6 段 | `src/greenhouse/watering_ledger/contracts.py` `src/greenhouse/watering_ledger/analysis.py` `src/greenhouse/watering_ledger/service.py` | `tests/test_watering_ledger.py` |
+| M4b 补灌放行 | 根区缺读棚区在重排配水前的补灌裁决与封档 | 运行证据第 5 段 | `src/greenhouse/supplemental_release/contracts.py` `src/greenhouse/supplemental_release/analysis.py` `src/greenhouse/supplemental_release/ledger.py` `src/greenhouse/supplemental_release/service.py` | `tests/test_supplemental_release.py` `tests/test_release_ledger.py` `tests/test_supplemental_pipeline.py` |
+| M5 分区拨水 | 联合班次水源、泵组和阀门开启窗口做分配 | 运行证据第 6 段 | `src/greenhouse/irrigation_quota/contracts.py` `src/greenhouse/irrigation_quota/analysis.py` `src/greenhouse/irrigation_quota/service.py` | `tests/test_irrigation_quota.py` |
+| M6 农事账目 | 以计量单和分区授权核对超额领用 | 运行证据第 7 段 | `src/greenhouse/watering_ledger/contracts.py` `src/greenhouse/watering_ledger/analysis.py` `src/greenhouse/watering_ledger/service.py` | `tests/test_watering_ledger.py` |
 
 ## 陷阱登记
 
@@ -25,4 +26,8 @@
 | TRAP-42 | 根区记录业务日期较早但延迟上传 | 未来发布数据改变历史训练 | 同时限定业务日和发布时间 | `src/greenhouse/rootzone_history/analysis.py` | `tests/test_rootzone_history.py::test_visible_dates_prevent_retrospective_leakage` |
 | TRAP-43 | 无剩余有效校准集 | 空桶误报正常 | 保留空状态并停止拨水 | `src/greenhouse/moisture_band/analysis.py` | `tests/test_moisture_band.py::test_empty_validation_keeps_uncertainty_unknown` |
 | TRAP-44 | 当日光照超出历史范围 | 超自然幅度仍生成授权 | 超分布工况显式挂起 | `src/greenhouse/moisture_band/analysis.py` | `tests/test_moisture_band.py::test_shift_distance_disables_high_demand` |
+| TRAP-61 | 根区探头不足但遥测正常 | 证据不足时补水掩盖探头故障，或干旱棚区持续缺水 | 遥测断档/根区过湿/历史证据不足一律挂起，其余按硬联锁裁决 | `src/greenhouse/supplemental_release/analysis.py` | `tests/test_supplemental_release.py::test_telemetry_gap_never_released_even_if_soil_looks_dry` |
+| TRAP-62 | 干燥日中位补水量非整百升 | 零头上调造成超额补水 | 放行量按 100 升保守向下取整，资产上限先封顶 | `src/greenhouse/supplemental_release/analysis.py` | `tests/test_supplemental_release.py::test_release_takes_only_conservative_lower_bound` |
+| TRAP-63 | 放行额度超过泵班可排窗口 | 排不进班表的水量被误记为已补 | 独立泵班排班，未排量单列且不计补灌 | `src/greenhouse/pipeline.py` | `tests/test_supplemental_pipeline.py::test_pump_timetable_shortfall_is_not_counted_as_supplemented` |
+| TRAP-64 | 同一天重跑或迟到补报到达 | 历史裁决被新数据追改、额度改口 | 按业务日只追加封档，同日回放首次结论，迟到数据只进次日重算 | `src/greenhouse/supplemental_release/ledger.py` | `tests/test_release_ledger.py::test_late_data_only_affects_later_days_never_rewrites_sealed_day` |
 | TRAP-53 | 推断批并入超常工况 | 训练缩放被新批次改变 | 固定训练期统计量 | `src/greenhouse/evapotranspiration/analysis.py` | `tests/test_evapotranspiration.py::test_one_zone_prediction_is_independent_of_batch_population` |
